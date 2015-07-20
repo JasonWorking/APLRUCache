@@ -132,12 +132,14 @@
 
 @property (nonatomic, strong) NSMutableDictionary *hashtable;
 
+@property (nonatomic, strong) NSRecursiveLock *lock;
 
 /**
  *  Clear all cache on memory warning .
  */
 - (void)_clearCache;
 @end
+
 
 
 @implementation APLRUCache
@@ -155,6 +157,7 @@
         _length    = 0;
         _queue     = [[APLRUCacheLinkList alloc] init];
         _hashtable = [[NSMutableDictionary alloc] initWithCapacity:capacity];
+        _lock      = [[NSRecursiveLock alloc] init];
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(_clearCache)
                                                      name:UIApplicationDidReceiveMemoryWarningNotification
@@ -176,12 +179,12 @@
 {
     APLRUCacheNode *node = nil;
     
-    @synchronized(self){
-        if ( (node = self.hashtable[key])) {
-            [self.queue removeNode:node];
-            [self.queue addNodeToHead:node];
-        }
-     }
+    [self.lock lock];
+    if ( (node = self.hashtable[key])) {
+        [self.queue removeNode:node];
+        [self.queue addNodeToHead:node];
+    }
+    [self.lock unlock];
     
     return node.value;
 }
@@ -189,51 +192,49 @@
 
 - (void)cacheObject:(id)object forKey:(NSString *)key
 {
-    
-    @synchronized(self){
+    [self.lock lock];
+    if (self.hashtable[key]) {
+        // Update node
+        APLRUCacheNode *node = self.hashtable[key];
+        node.value = object;
         
-        if (self.hashtable[key]) {
-            // Update node
-            APLRUCacheNode *node = self.hashtable[key];
-            node.value = object;
-            
-            [self.queue removeNode:node];
+        [self.queue removeNode:node];
+        [self.queue addNodeToHead:node];
+    } else {
+        // Add new node
+        APLRUCacheNode *node = [[APLRUCacheNode alloc] initWithKey:key value:object];
+        if (self.length < self.capacity) {
+            self.hashtable[key] = node;
             [self.queue addNodeToHead:node];
-        } else {
-            // Add new node
-            APLRUCacheNode *node = [[APLRUCacheNode alloc] initWithKey:key value:object];
-            if (self.length < self.capacity) {
-                self.hashtable[key] = node;
-                [self.queue addNodeToHead:node];
-                self.length ++;
-            }else{
-                NSString *preTailKey = self.queue.tail.key;
-                NSAssert(preTailKey != nil, @"preTailKey != nil");
-                self.queue.tail = self.queue.tail.previous;
-                [self.hashtable removeObjectForKey:preTailKey];
-                
-                if (self.queue.tail) {
-                    self.queue.tail.next = nil;
-                }
-                [self.queue addNodeToHead:node];
-                self.hashtable[key] = node;
-                
+            self.length ++;
+        }else{
+            NSString *preTailKey = self.queue.tail.key;
+            NSAssert(preTailKey != nil, @"preTailKey != nil");
+            self.queue.tail = self.queue.tail.previous;
+            [self.hashtable removeObjectForKey:preTailKey];
+            
+            if (self.queue.tail) {
+                self.queue.tail.next = nil;
             }
+            [self.queue addNodeToHead:node];
+            self.hashtable[key] = node;
         }
     }
+    [self.lock unlock];
 }
 
 - (void)removeObjectForKey:(NSString *)key
 {
     NSParameterAssert(key!= nil && key !=  NULL);
     APLRUCacheNode *node = nil;
-    @synchronized(self){
-        if ( (node = self.hashtable[key])) {
-            [self.queue removeNode:node];
-            [self.hashtable removeObjectForKey:key];
-            self.length--;
-        }
+    
+    [self.lock lock];
+    if ( (node = self.hashtable[key])) {
+        [self.queue removeNode:node];
+        [self.hashtable removeObjectForKey:key];
+        self.length--;
     }
+    [self.lock unlock];
 }
 
 
@@ -254,6 +255,8 @@
 
 
 @end
+
+
 
 
 
